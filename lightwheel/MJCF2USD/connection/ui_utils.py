@@ -105,6 +105,7 @@ def add_folder_picker_icon(
             style=get_style()["IconButton.Image::FolderPicker"],
             alignment=ui.Alignment.RIGHT_CENTER,
         )
+    return open_file_picker
 
 
 def btn_builder(label="", type="button", text="button", tooltip="", on_clicked_fn=None):
