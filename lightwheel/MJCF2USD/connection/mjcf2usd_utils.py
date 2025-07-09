@@ -842,7 +842,7 @@ def set_joint_properties(joint,joint_data):
     properties = usd_joint_dict[joint_type]
     for prop_name, usd_attrs in properties.items():
         value = joint_data.get(prop_name)
-        if value is None:
+        if not value:
             continue
         for attr in usd_attrs:
             if joint.HasAttribute(attr):
