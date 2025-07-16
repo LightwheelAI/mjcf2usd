@@ -547,35 +547,10 @@ def mjcf_to_usd(mjcf_path, usd_path='',need_save_tmp_xml=False):
             import_config=import_config,
             prim_path="/root"
         )
-        
-        "Delete unwanted worldbody."
-        default_prim = stage.GetDefaultPrim()
-        world_body_prim = default_prim.GetChild('worldBody')
-        if world_body_prim:
-            omni.kit.commands.execute('DeletePrims',
-                paths=[world_body_prim.GetPath()],
-                destructive=False)
-        
-        "Delete unwanted _body_0 under _body_0."
-        _body_0_path = Sdf.Path(f'/{default_prim.GetName()}/_body_0/_body_0')
-        omni.kit.commands.execute('DeletePrims',
-            paths=[_body_0_path],
-            destructive=False)
-        
-        "Process Site"
-        # set sites invisible
-        body_prim = default_prim.GetChild('_body_0')
-        all_sites = []
-        get_all_sites(body_prim, all_sites)
-        for site in all_sites:
-            omni.kit.commands.execute('ToggleVisibilitySelectedPrims',
-                selected_paths=[site.GetPath()],
-                stage=omni.usd.get_context().get_stage(),
-                visible=False)
-        
+         
         "Fix joints"
         joints_info = xml_handler.get_joints()
-        fix_joints(stage, joints_info, _body_0_path)
+        fix_joints(stage, joints_info)
         
         "Resolve mesh name conflicts caused by native import"   
         fix_repeat_mesh_name()
@@ -627,7 +602,7 @@ def fix_physics(stage,density_dict):
             density = float(density_dict.get(prim.GetName()))
             mass_api = UsdPhysics.MassAPI.Apply(prim)
             mass_api.CreateDensityAttr().Set(density)
-     
+                 
 def clear_default_error_material(stage):
     """ clear materials under Looks scope """
     default_prim = stage.GetDefaultPrim()
@@ -758,7 +733,7 @@ def transfer_texture(usd_path,materials):
             if os.path.exists(result):
                 material_data['texture_file'] = result
       
-def fix_joints(stage, joints_info, _body_0_path):
+def fix_joints(stage, joints_info):
 
     def get_all_joints(prim, joints=[]):
         """Recursively get all joints under the given prim"""
@@ -776,13 +751,6 @@ def fix_joints(stage, joints_info, _body_0_path):
         joint_data = joints_info.get(joint.GetName())
         if joint_data:
             set_joint_properties(joint,joint_data)
-            
-    # delete unwanted joints
-    for joint in all_joints:
-        if joint.GetName().startswith("rootJoint") or if_joints_linked(stage,joint.GetPath(),_body_0_path):
-            omni.kit.commands.execute('DeletePrims',
-                paths=[joint.GetPath()],
-                destructive=False)
             
 def if_joints_linked(stage,joint_path,target_path)->bool:
     """
