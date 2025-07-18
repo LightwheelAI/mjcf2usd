@@ -10,7 +10,7 @@ from scipy.spatial.transform import Rotation as R
 import omni.kit.commands
 import omni.physx
 
-from pxr import Sdf, Gf, UsdPhysics, PhysxSchema, UsdShade
+from pxr import Sdf, Gf, UsdPhysics, PhysxSchema, Usd, UsdShade, UsdGeom
 
 class XMLHandler:
     def __init__(self, xml_path):
@@ -555,6 +555,8 @@ def mjcf_to_usd(mjcf_path, usd_path='',need_save_tmp_xml=False):
         "Resolve mesh name conflicts caused by native import"   
         fix_repeat_mesh_name()
         
+        fix_reference_missing_transform()
+        
         "Copy texture assets to the output directory."
         materials = xml_handler.get_materials()
         transfer_texture(usd_path, materials)
@@ -567,6 +569,8 @@ def mjcf_to_usd(mjcf_path, usd_path='',need_save_tmp_xml=False):
         "Fix density"
         density_dict = xml_handler.get_density()
         fix_physics(stage, density_dict)
+        
+        apply_trimesh_collision(stage)
             
         # # converted by LW rule(Get directory as model name)
         parent_dir = os.path.dirname(mjcf_path)
@@ -602,6 +606,13 @@ def fix_physics(stage,density_dict):
             density = float(density_dict.get(prim.GetName()))
             mass_api = UsdPhysics.MassAPI.Apply(prim)
             mass_api.CreateDensityAttr().Set(density)
+            
+def apply_trimesh_collision(stage):
+    for prim in stage.Traverse():
+        if prim.HasAPI(UsdPhysics.MeshCollisionAPI):
+            mesh_collision_api = UsdPhysics.MeshCollisionAPI.Apply(prim)
+            mesh_collision_api.GetApproximationAttr().Set("none")
+
                  
 def clear_default_error_material(stage):
     """ clear materials under Looks scope """
@@ -718,7 +729,21 @@ def fix_repeat_mesh_name():
                             path_to=Sdf.Path(newPrimPath),
                             destructive=False,
                             stage_or_context=omni.usd.get_context().get_stage())
-
+                        
+def fix_reference_missing_transform():
+    "Transforms on intermediate references are ignored when using multiple levels of references."
+    try:
+        stage = omni.usd.get_context().get_stage()
+        meshes_prim = stage.GetPrimAtPath("/meshes")
+        if meshes_prim is not None:
+            xformes = meshes_prim.GetChildren()
+            for xform in xformes:
+                meshes = xform.GetChildren()
+                for mesh in meshes:
+                    copy_xform_op(xform,mesh)
+    except Exception as e:
+            print(f"Skipped fixing reference missing transform due to error: {e}")
+            
 def transfer_texture(usd_path,materials):
     destination_dir = os.path.dirname(usd_path)
     destination_dir = os.path.join(destination_dir,"texture","")
@@ -842,6 +867,63 @@ def convert_quat_scipy_2_mjcf(quat_scipy):
     """Convert quaternion from  SciPy (x, y, z, w) to MJCF (w, x, y, z)format."""
     quat_mjcf = [quat_scipy[3]] + list(quat_scipy[:3])
     return quat_mjcf
+
+@staticmethod
+def get_xform_op(prim):
+    op_type_list = []
+    op_name_list = []
+    op_value_list = []
+    op_pre_list = []
+    
+    xform = UsdGeom.Xformable(prim)
+
+    for op in xform.GetOrderedXformOps():
+        op_type = op.GetOpType()
+        op_name = op.GetName()
+        value = op.Get()
+        precision = op.GetPrecision()
+        
+        op_type_list.append(op_type)
+        op_name_list.append(op_name)
+        op_value_list.append(value)
+        op_pre_list.append(precision)
+        
+    return op_type_list,op_name_list,op_value_list,op_pre_list
+
+@staticmethod
+def set_xform_op(prim,op_type_list,op_name_list,op_value_list,op_pre_list):
+    tgt_xform = UsdGeom.Xformable(prim)
+    
+    for idx, op in enumerate(op_type_list):
+        op_type = op_type_list[idx]
+        op_pre  = op_pre_list[idx]
+        op_name = op_name_list[idx]
+        opo_value = op_value_list[idx]
+            
+        tgt_op = tgt_xform.AddXformOp(op_type, op_pre, op_name)
+        tgt_op.Set(opo_value)
+        
+@staticmethod
+def clear_xform_ops(prim: Usd.Prim):
+    """Remove all xform ops from input prim.
+
+    Args:
+        prim (Usd.Prim): The input USD prim.
+    """
+    xformable = UsdGeom.Xformable(prim)
+    if xformable:
+        xformable.ClearXformOpOrder()
+        # Remove any authored transform properties
+        authored_prop_names = prim.GetAuthoredPropertyNames()
+        for prop_name in authored_prop_names:
+            if prop_name.startswith("xformOp:"):
+                prim.RemoveProperty(prop_name)
+                
+@staticmethod
+def copy_xform_op(source:Usd.Prim,traget:Usd.Prim):
+    clear_xform_ops(traget)
+    op_type_list,op_name_list,op_value_list,op_pre_list = get_xform_op(source)
+    set_xform_op(traget,op_type_list,op_name_list,op_value_list,op_pre_list)
 
 def get_xmls(xml_dir):
     """
