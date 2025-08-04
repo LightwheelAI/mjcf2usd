@@ -23,7 +23,7 @@ class XMLHandler:
         self.xml_path = xml_path
         self.tree = ET.parse(xml_path)
         self.root = self.tree.getroot()
-        
+        self.unnamed_body_cnt = 0
         self.replicate_name_list = []
     
     def __enter__(self):
@@ -89,40 +89,44 @@ class XMLHandler:
     def get_materials(self):
         """Get material information from the XML file"""
         # Create dict for materials and textures
-        textures = {}
-        materials = {}
-        
-        asset = self.root.find('asset')
-        
-        parent_dir = os.path.dirname(self.xml_path)
-        for texture in asset.findall('texture'):
-            textures[texture.get('name')] = {
-                'file': os.path.join(parent_dir, texture.get('file')),
-                'type': texture.get('type')
-            }
-        
-        for material in asset.findall('material'):
-            name = material.get('name')
-            texture_name = material.get('texture', '')
-            if texture_name:
-                texture_file = textures.get(texture_name).get('file')
-                texture_type = textures.get(texture_name).get('type')
-            else:
-                texture_file = ''
-                texture_type = ''
-                
-            material_data = {
-                'rgba': material.get('rgba'),
-                'shininess': material.get('shininess'),
-                'specular': material.get('specular'),
-                'texture_file': texture_file, 
-                'texture_type': texture_type
-            }
-            material_name = 'material_' + name
-            material_name = convert_name_from_mjcf_2_usd(material_name)
-            materials[material_name] = material_data
+        try :
+            textures = {}
+            materials = {}
+            
+            asset = self.root.find('asset')
+            
+            parent_dir = os.path.dirname(self.xml_path)
+            for texture in asset.findall('texture'):
+                textures[texture.get('name')] = {
+                    'file': os.path.join(parent_dir, texture.get('file')),
+                    'type': texture.get('type')
+                }
+            
+            for material in asset.findall('material'):
+                name = material.get('name')
+                texture_name = material.get('texture', '')
+                if texture_name:
+                    texture_file = textures.get(texture_name).get('file')
+                    texture_type = textures.get(texture_name).get('type')
+                else:
+                    texture_file = ''
+                    texture_type = ''
+                    
+                material_data = {
+                    'rgba': material.get('rgba'),
+                    'shininess': material.get('shininess'),
+                    'specular': material.get('specular'),
+                    'texture_file': texture_file, 
+                    'texture_type': texture_type
+                }
+                material_name = 'material_' + name
+                material_name = convert_name_from_mjcf_2_usd(material_name)
+                materials[material_name] = material_data
 
-        return materials
+            return materials
+        except Exception as e:
+            print(f"Skip get materials from XML: {e}")
+            return {}
     
     def get_geom_material_map(self):
         "Get the mapping between geometries and their associated materials."
@@ -240,19 +244,23 @@ class XMLHandler:
 
         Later, these 'refquat' values are applied to corresponding <geom> elements to correct their orientation.
         """
-        mesh_refquat_dict = defaultdict(list)
-        asset_elem = self.root.find(".//asset")
-        for mesh in asset_elem.findall("mesh"):
-            mesh_name = mesh.get("name")
-            mesh_refquat = mesh.get("refquat")
-            if mesh_name is not None and mesh_refquat is not None:
-                mesh_name = convert_name_from_mjcf_2_usd(mesh_name)
-                del mesh.attrib['refquat']
-                
-                mesh_refquat = list(map(float, mesh_refquat.strip().split()))
-                mesh_refquat_dict[mesh_name] = mesh_refquat
-        
-        self.geom_add_refquat(self.root,mesh_refquat_dict)
+        try :
+            mesh_refquat_dict = defaultdict(list)
+            asset_elem = self.root.find(".//asset")
+            for mesh in asset_elem.findall("mesh"):
+                mesh_name = mesh.get("name")
+                mesh_refquat = mesh.get("refquat")
+                if mesh_name is not None and mesh_refquat is not None:
+                    mesh_name = convert_name_from_mjcf_2_usd(mesh_name)
+                    del mesh.attrib['refquat']
+                    
+                    mesh_refquat = list(map(float, mesh_refquat.strip().split()))
+                    mesh_refquat_dict[mesh_name] = mesh_refquat
+            
+            self.geom_add_refquat(self.root,mesh_refquat_dict)
+        except Exception as e:
+            print(f"Skip processing refquat in meshes: {e}")
+            return False
             
     def geom_add_refquat(self,parent,mesh_refquat_dict):
         for child in list(parent):
@@ -518,6 +526,41 @@ class XMLHandler:
             quat_mjcf = convert_quat_scipy_2_mjcf(q_list)
             elem.set("quat", ' '.join(map(str, quat_mjcf)))
 
+    def change_unnamed_geom(self, root, father_name, unnamed_geom : dict):
+        """
+        Change unnamed geometries in the XML tree by assigning them unique names and storing their position, orientation, and size.
+        Args:
+            root (Element): The father element to start processing.
+            father_name (str): The name of the father body, used for naming unnamed geometries.
+            unnamed_geom (dict): A dictionary to store unnamed geometries with their attributes.
+        """
+        cnt = 0
+        for item in root:
+            if item.tag == 'body':
+                if item.get('name') is None:
+                    self.unnamed_body_cnt += 1
+                    body_name = 'unnamed_body_' + str(self.unnamed_body_cnt)
+                else:
+                    body_name = item.get('name')
+                item.set('name', body_name)
+            if item.tag == 'geom' and item.get('mesh') is None and item.get('name') is None:
+                name = item.get('name')
+                if name is None:
+                    cnt += 1
+                    # if type is not set, default is sphere in mujoco
+                    name =  (father_name if root.tag != 'worldbody' else 'worldbody') + '_' + item.get('type', 'sphere') + '_' + str(cnt)
+                    item.set('name', name)
+                    
+                pos = None if item.get('pos') is None else [float(i) for i in (item.get('pos').split())]
+                size = None if item.get('size') is None else [float(i) for i in (item.get('size').split())]
+                if len(size) == 1 or item.get('type') is None:
+                    size = [size[0], size[0], size[0]]
+                elif item.get('type') == 'capsule' or item.get('type') == 'cylinder':
+                    # For capsule and cylinder, size is [radius, length], so the first two values are the same
+                    size = [size[0], size[0], size[1]]
+                unnamed_geom[name] = [pos, self.get_quat(item), size]
+            self.change_unnamed_geom(item, body_name if item.tag == 'body' else None, unnamed_geom)
+                    
 def mjcf_to_usd(mjcf_path, usd_path='',need_save_tmp_xml=False):
     if usd_path == '':
         usd_path = mjcf_path[:-4] + ".usd"
@@ -530,6 +573,8 @@ def mjcf_to_usd(mjcf_path, usd_path='',need_save_tmp_xml=False):
         xml_handler.preprocess_refquat_in_meshes()
         xml_handler.expand_replicates_fields()
         xml_handler.fix_site_placement()
+        unmeshed_geom = {}
+        xml_handler.change_unnamed_geom(xml_handler.root.find(".//worldbody"), None, unmeshed_geom)
         xml_handler.save_xml()
         
         """Create a new empty USD stage"""
@@ -554,7 +599,9 @@ def mjcf_to_usd(mjcf_path, usd_path='',need_save_tmp_xml=False):
         
         "Resolve mesh name conflicts caused by native import"   
         fix_repeat_mesh_name()
-        
+                
+        fix_unmeshed_geom_info(stage.GetPrimAtPath('/meshes'), unmeshed_geom)
+
         fix_reference_missing_transform()
         
         "Copy texture assets to the output directory."
@@ -571,7 +618,7 @@ def mjcf_to_usd(mjcf_path, usd_path='',need_save_tmp_xml=False):
         fix_physics(stage, density_dict)
         
         apply_trimesh_collision(stage)
-            
+
         # # converted by LW rule(Get directory as model name)
         parent_dir = os.path.dirname(mjcf_path)
 
@@ -586,7 +633,47 @@ def mjcf_to_usd(mjcf_path, usd_path='',need_save_tmp_xml=False):
         if not need_save_tmp_xml:
             os.remove(tmp_mjcf_path)
         return
-       
+
+def fix_unmeshed_geom_info(mesh_prim, unmeshed_geom: dict):
+    """
+    Adjust the size of geometries in the USD stage that are not associated with meshes.
+
+    Args:
+        mesh_prim (Usd.Prim): The USD stage node containing the geometries.
+        unnamed_geom (dict): A dictionary mapping geometry names to their size information.
+    """
+    op_types = [
+        "xformOp:translate",
+        "xformOp:orient",
+        "xformOp:scale"
+    ]
+    for prim in mesh_prim.GetChildren():
+        if prim.GetTypeName() == "Xform":
+            if prim.GetName() in unmeshed_geom:
+                print(prim.GetName(), prim.GetTypeName(), prim.GetPath())
+                transforms = unmeshed_geom[prim.GetName()]
+
+                # process size attribute
+                xformable = UsdGeom.Xformable(prim)
+                ops = xformable.GetOrderedXformOps()
+                has_op_types = [op.GetOpName() in op_types for op in ops]
+                for i, op_type in enumerate(op_types):
+                    if transforms[i] is not None:
+                        if op_type not in has_op_types:
+                            if op_type == "xformOp:translate":
+                                pos_op = xformable.AddTranslateOp()
+                                pos = transforms[i]
+                                pos_op.Set(Gf.Vec3d(pos[0], pos[1], pos[2]))
+                            elif op_type == "xformOp:orient":
+                                quat = transforms[i]
+                                rot_op = xformable.AddOrientOp()
+                                rot_op.Set(Gf.Quatf(quat[3], quat[0], quat[1], quat[2]))
+                            elif op_type == "xformOp:scale":
+                                scale_op = xformable.AddScaleOp()
+                                scale = transforms[i]
+                                scale_op.Set(Gf.Vec3d(scale[0], scale[1], scale[2]))
+        fix_unmeshed_geom_info(prim, unmeshed_geom)
+ 
 def get_all_sites(prim, sites=[]):
     """Recursively get all sites under the given prim"""
     for child in prim.GetChildren():
