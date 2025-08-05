@@ -560,7 +560,10 @@ class XMLHandler:
                     size = [size[0], size[0], size[1]]
                 unnamed_geom[name] = [pos, self.get_quat(item), size]
             self.change_unnamed_geom(item, body_name if item.tag == 'body' else None, unnamed_geom)
-                    
+
+def debug(stage):
+    root_prim = stage.GetPrimAtPath('/root')
+
 def mjcf_to_usd(mjcf_path, usd_path='',need_save_tmp_xml=False):
     if usd_path == '':
         usd_path = mjcf_path[:-4] + ".usd"
@@ -650,7 +653,6 @@ def fix_unmeshed_geom_info(mesh_prim, unmeshed_geom: dict):
     for prim in mesh_prim.GetChildren():
         if prim.GetTypeName() == "Xform":
             if prim.GetName() in unmeshed_geom:
-                print(prim.GetName(), prim.GetTypeName(), prim.GetPath())
                 transforms = unmeshed_geom[prim.GetName()]
 
                 # process size attribute
@@ -816,18 +818,62 @@ def fix_repeat_mesh_name():
                             path_to=Sdf.Path(newPrimPath),
                             destructive=False,
                             stage_or_context=omni.usd.get_context().get_stage())
-                        
+
+def get_xfom_need_process(root_prim, set1, set2):
+    """
+    Traverse the USD stage to categorize referenced paths into two sets: `set1` and `set2`.
+
+    - `set1`: Stores paths of prims that are referenced by a single parent prim, 
+              and the parent prim does not reference any other prims.
+              Example: If prim A references prim B, and A does not reference any other prims, 
+              then B's path is added to `set1`.
+
+    - `set2`: Stores paths of prims that are referenced by a parent prim which also references 
+              other prims simultaneously.
+              Example: If prim D references both prims B and C, then B's and C's paths are added to `set2`.
+
+    Args:
+        root_prim (Usd.Prim): The root prim to start traversal.
+        set1 (set): A set to store paths of prims meeting the `set1` criteria.
+        set2 (set): A set to store paths of prims meeting the `set2` criteria.
+    """
+    for prim in root_prim.GetChildren():
+        if prim.GetTypeName() == 'Xform' and prim.GetName() in ['collisions', 'visuals']:
+            cnt = 0
+            for ref in Usd.PrimCompositionQuery.GetDirectReferences(prim).GetCompositionArcs():
+                target_path = str(ref.GetTargetPrimPath())
+                if '/meshes/' in target_path:
+                    cnt += 1
+
+            if cnt > 1:
+                for ref in Usd.PrimCompositionQuery.GetDirectReferences(prim).GetCompositionArcs():
+                    target_path = str(ref.GetTargetPrimPath())
+                    set2.add(target_path)
+            elif cnt == 1:
+                set1.add(target_path)
+
+        get_xfom_need_process(prim, set1, set2)
+
 def fix_reference_missing_transform():
-    "Transforms on intermediate references are ignored when using multiple levels of references."
+    """
+    Transforms on intermediate references are ignored when using multiple levels of references.
+    When an Xform prim references multiple Xform (e.g., B and C) simultaneously at the same composition site, 
+    B and C's transform must be pushed down to their child.  This is unnecessary for single Xform references
+    """
     try:
         stage = omni.usd.get_context().get_stage()
+        set1, set2 = set(), set()
+        get_xfom_need_process(stage.GetPrimAtPath("/root"), set1, set2)
+        inter_set = set2.intersection(set1)
         meshes_prim = stage.GetPrimAtPath("/meshes")
         if meshes_prim is not None:
             xformes = meshes_prim.GetChildren()
             for xform in xformes:
-                meshes = xform.GetChildren()
-                for mesh in meshes:
-                    copy_xform_op(xform,mesh)
+                xform_path = str(xform.GetPath())
+                if xform_path in set2:
+                    meshes = xform.GetChildren()
+                    for mesh in meshes:
+                        copy_xform_op(xform, mesh, xform_path in inter_set)
     except Exception as e:
             print(f"Skipped fixing reference missing transform due to error: {e}")
             
@@ -1007,9 +1053,11 @@ def clear_xform_ops(prim: Usd.Prim):
                 prim.RemoveProperty(prop_name)
                 
 @staticmethod
-def copy_xform_op(source:Usd.Prim,traget:Usd.Prim):
+def copy_xform_op(source:Usd.Prim,traget:Usd.Prim, flag: bool):
     clear_xform_ops(traget)
     op_type_list,op_name_list,op_value_list,op_pre_list = get_xform_op(source)
+    if flag:
+        clear_xform_ops(source)
     set_xform_op(traget,op_type_list,op_name_list,op_value_list,op_pre_list)
 
 def get_xmls(xml_dir):
